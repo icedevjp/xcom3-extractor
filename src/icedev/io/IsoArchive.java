@@ -4,29 +4,36 @@ import java.io.*;
 import java.util.*;
 
 import icedev.io.ISO9660.*;
-import icedev.xcom.extract.DecodePCK.DataSupplier;
+import icedev.io.ISO9660.SectorInputStream;
+import icedev.xcom.extract.PckExtractor.DataSupplier;
 
 public class IsoArchive implements Closeable {
-	public class IsoEntry {
+	public class IsoEntry implements DataSupplier {
 		public final String name;
-		public final long offset;
+		protected final int sector;
 		public final long length;
 		
-		public IsoEntry(String name, long offset, long length) {
+		public IsoEntry(String name, int sector, long length) {
 			this.name = name;
-			this.offset = offset;
+			this.sector = sector;
 			this.length = length;
 		}
+
+		public LittleEndianInputStream open(int offset) throws IOException {
+			return new LittleEndianInputStream(IsoArchive.this.open(this, offset));
+		}
+		
+		public LittleEndianInputStream open() throws IOException {
+			return new LittleEndianInputStream(IsoArchive.this.open(this));
+		}
+		
 	}
 	
-	RandomAccessFile raf;
-	FileInputStream rin;
-	
 	Map<String, IsoEntry> entries = new HashMap<>();
+	private ISO9660 iso;
 	
-	public IsoArchive(File iso) throws IOException { 
-		raf = new RandomAccessFile(iso, "r");
-		rin = new FileInputStream(raf.getFD());
+	public IsoArchive(File isoFile, boolean rawMode) throws IOException {
+		iso = new ISO9660(new RandomAccessFile(isoFile, "r"), rawMode? 2352 : 0);
 		
 		populateEntries();
 	}
@@ -35,23 +42,24 @@ public class IsoArchive implements Closeable {
 		return entries.get(path);
 	}
 	
-	public InputStream open(String path) {
+	public InputStream open(String path) throws IOException {
 		return open(get(path));
 	}
 	
-	public InputStream open(IsoEntry entry) {
-		return new IsoEntryInputStream(entry.offset, entry.offset+entry.length);
+	public InputStream open(IsoEntry entry) throws IOException {
+		return iso.getStreamAtSector(entry.sector); //new IsoEntryInputStream(entry.offset, entry.offset+entry.length);
 	}
 	
-	public InputStream open(IsoEntry entry, int innerOffset) {
-		if(innerOffset<0)
-			throw new IllegalArgumentException("offset must be positive");
-		long limit = entry.offset+entry.length;
-		return new IsoEntryInputStream(Math.min(innerOffset+entry.offset, limit), limit);
+	public InputStream open(IsoEntry entry, int offset) throws IOException {
+		int blocks = offset / iso.blockSize;
+		int skip = offset % iso.blockSize;
+		
+		SectorInputStream stream = iso.getStreamAtSector(entry.sector + blocks);
+		stream.skip(skip);
+		return stream;
 	}
 	
 	private void populateEntries() throws IOException {
-		ISO9660 iso = new ISO9660(raf);
 		iso.readVolumeDescriptor();
 		List<PathEntry> table = iso.readPathTable();
 		List<DirEntry> dirs = new ArrayList<>();
@@ -60,60 +68,54 @@ public class IsoArchive implements Closeable {
 			for(DirEntry d : dirs) {
 				if(d.isDirectory())
 					continue;
-				IsoEntry e = new IsoEntry(d.fileIdentifier.split(";")[0], d.locationOfExtent * iso.blockSize, d.dataLength);
+				IsoEntry e = new IsoEntry(d.fileIdentifier.split(";")[0], d.locationOfExtent, d.dataLength);
 				entries.put(p.path + "/" + e.name, e);
 			}
 			dirs.clear();
 		}
 	}
+	
+	static class LimitedInputStream extends FilterInputStream {
+		private int left;
 
-	class IsoEntryInputStream extends InputStream {
-		long offset;
-		long limit;
-		
-		IsoEntryInputStream(long offset, long limit) {
-			this.offset = offset;
-			this.limit = limit;
+		protected LimitedInputStream(InputStream in, int limit) {
+			super(in);
+			this.left = limit;
 		}
-
+		
 		@Override
 		public int read() throws IOException {
-			if(offset >= limit)
+			if(left <= 0)
 				return -1;
-			raf.seek(offset++);
-			return rin.read();
+			left--;
+			return in.read();
 		}
-		
+
 		@Override
 		public int read(byte[] b, int off, int len) throws IOException {
-			int max = (int) (limit-offset);
-			if(max <= 0)
+			if(left <= 0)
 				return -1;
-			raf.seek(offset);
-			int read = rin.read(b, off, Math.min(len, max));
+			int read = in.read(b, off, Math.min(len, left));
 			if(read > 0)
-				offset += read;
+				left -= read;
 			return read;
 		}
 		
 		@Override
-		public int available() throws IOException {
-			int max = (int) (limit-offset);
-			raf.seek(offset);
-			int avail = rin.available();
-			return Math.min(max, avail);
+		public long skip(long n) throws IOException {
+			long skipped = in.skip(Math.min(n, left));
+			left -= skipped;
+			return skipped;
 		}
 		
 		@Override
-		public long skip(long n) throws IOException {
-			int max = (int) (limit-offset);
-			long skipped = Math.min(n, max);
-			offset += skipped;
-			return skipped;
+		public int available() throws IOException {
+			int available = super.available();
+			return Math.min(available, left);
 		}
 	}
 	
 	public void close() throws IOException {
-		raf.close();
+		iso.raf.close();
 	}
 }

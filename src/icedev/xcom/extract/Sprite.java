@@ -6,9 +6,6 @@ public class Sprite {
 	public Image img;
 	public int offX;
 	public int offY;
-	public float orderCorrection;
-	
-//	public int left, right, top, bottom;
 
 	public Sprite(Image img, int offX, int offY) {
 		this.img = img;

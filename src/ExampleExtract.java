@@ -11,24 +11,46 @@ import icedev.io.IsoArchive.IsoEntry;
 import icedev.xcom.extract.*;
 
 public class ExampleExtract {
+	
+	public static File selectUserIsoFile() {
+		File isoFile = new File("cd.iso");
+		
+		if(isoFile.exists()) {
+			return isoFile;
+		}
+		
+		FileDialog fd = new FileDialog((Frame) null, "Select ISO or BIN file");
+		fd.setMultipleMode(false);
+		fd.show(); // this will block until dialog is closed
+		fd.dispose();
+		
+		String name = fd.getFile();
+		if(name != null) {
+			return new File(fd.getDirectory(), name);
+		}
+		
+		return null;
+	}
+	
 
 	public static void main(String[] args) throws Exception {
-		IsoArchive iso = new IsoArchive(new File("cd.iso")); // provide path to xcom apocalypse iso
-		DecodePCK pck = new DecodePCK();
+		File isoFile = selectUserIsoFile();
 		
-		System.out.println("load palette");
-		IsoEntry palFile = iso.get("/XCOM3/UFODATA/PAL_01.DAT");
-		pck.decodePalette(LittleEndianInputStream.wrap(iso.open(palFile)), (int) (palFile.length / 3L));
+		IsoArchive iso = new IsoArchive(isoFile, isoFile.getName().toLowerCase().endsWith(".iso") == false); // provide path to xcom apocalypse iso
+		PckExtractor pck = new PckExtractor();
 
+		System.out.println("load palette");
+		IsoEntry pal = iso.get("XCOM3/UFODATA/PAL_01.DAT");
+		pck.decodePalette(pal.open(), (int) (pal.length/3));
+		
 		System.out.println("load city sprites");
-		List<Sprite> sprites = new ArrayList<>();
-		IsoEntry cityTab = iso.get("/XCOM3/UFODATA/CITY.TAB");
-		IsoEntry cityPck = iso.get("/XCOM3/UFODATA/CITY.PCK");
-		pck.decode(LittleEndianInputStream.wrap(iso.open(cityTab)), (offset)-> LittleEndianInputStream.wrap(iso.open(cityPck, offset)), sprites);
+		IsoEntry cityTab = iso.get("XCOM3/UFODATA/CITY.TAB");
+		IsoEntry cityPck = iso.get("XCOM3/UFODATA/CITY.PCK");
+		Sprite[] sprites = pck.decode(cityTab.open(), cityPck, (int) (cityTab.length/4));
 
 		System.out.println("save png");
 		File png = new File("CITY.PNG");
-		saveSprites(sprites, png);
+		saveSprites(Arrays.asList(sprites), png);
 		
 		if(Desktop.isDesktopSupported()) {
 			Desktop.getDesktop().open(png);

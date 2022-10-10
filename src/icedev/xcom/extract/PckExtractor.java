@@ -11,11 +11,11 @@ import icedev.io.*;
 /**
  * https://www.ufopaedia.org/index.php/Image_Formats_(Apocalypse)#PCK
  */
-public class DecodePCK {
+public class PckExtractor {
 	private static final int[] shadowPalette = {0, 0x80000000, 0x80000000, 0x40000000, 0x40000000, 0x40000000, 0x40000000, 0x40000000, 0x40000000};
 	
 	public static interface DataSupplier {
-		public LittleEndianInputStream seek(int offset) throws IOException;
+		public LittleEndianInputStream open(int offset) throws IOException;
 	}
 	
 	public static interface ImageSupplier {
@@ -32,9 +32,9 @@ public class DecodePCK {
 		}
 
 		@Override
-		public LittleEndianInputStream seek(int offset) throws IOException {
+		public LittleEndianInputStream open(int offset) throws IOException {
 			raf.seek(offset);
-			return LittleEndianInputStream.wrap(fis);
+			return new LittleEndianInputStream(new BufferedInputStream(fis, 2048));
 		}
 		
 	}
@@ -64,10 +64,11 @@ public class DecodePCK {
 	}
 	
 
-	public void decodeShadow(LittleEndianInputStream tab, DataSupplier pck, List<Sprite> out) throws IOException {
-		while(tab.available() > 0) {
+	public Sprite[] decodeShadow(LittleEndianInputStream tab, DataSupplier pck, int num) throws IOException {
+		Sprite[] sprites = new Sprite[num];
+		for(int idx=0; idx < num; idx++) {
 			int fileOffset = tab.readInt32();
-			LittleEndianInputStream in = pck.seek(fileOffset);
+			LittleEndianInputStream in = pck.open(fileOffset);
 			
 			in.readUint8(); // compression type
 			in.readUint8(); // ???
@@ -97,14 +98,17 @@ public class DecodePCK {
 				}
 			}
 			image.setRGB(0, 0, width, height, pixels, 0, width);
-			out.add(new Sprite(image, 0, 0));
+			Sprite sprite = new Sprite(image, 0, 0);
+			sprites[idx] = sprite;
 		}
+		return sprites;
 	}
 	
-	public void decode(LittleEndianInputStream tab, DataSupplier pck, List<Sprite> out) throws IOException {
-		while(tab.available() > 0) {
+	public Sprite[] decode(LittleEndianInputStream tab, DataSupplier pck, int num) throws IOException {
+		Sprite[] sprites = new Sprite[num];
+		for(int idx=0; idx < num; idx++) {
 			int fileOffset = tab.readInt32();
-			LittleEndianInputStream in =pck.seek(fileOffset << 2);
+			LittleEndianInputStream in =pck.open(fileOffset << 2);
 			
 			int compressionType = in.readUint8();
 			
@@ -119,8 +123,8 @@ public class DecodePCK {
 			
 			//System.out.println("metrics: " + left + ", " + right + ", " + top + ", " + bottom + " at offset " + fileOffset);
 			
-			char width = (char) (right - left);
-			char height = (char) (bottom - top);
+			int width = (right - left);
+			int height = (bottom - top);
 			
 			BufferedImage image = images.create(width, height);
 			int[] pixels = new int[width * height];
@@ -152,8 +156,9 @@ public class DecodePCK {
 				System.err.println("Unknown compression: " + compressionType);
 			}
 			Sprite sprite = new Sprite(image, left, top);
-			out.add(sprite);
+			sprites[idx] = sprite;
 		}
+		return sprites;
 	}
 	
 	public void loadPalette(File palFile) throws IOException {
@@ -161,25 +166,20 @@ public class DecodePCK {
 			decodePalette(stream, (int) (palFile.length() / 3L));
 		}
 	}
-	public List<Sprite> loadSprites(File pckFile, File tabFile) throws IOException {
-		List<Sprite> list = new ArrayList<>();
-		loadSprites(pckFile, tabFile, list);
-		return list;
-	}
 	
-	public void loadSprites(File pckFile, File tabFile, List<Sprite> out) throws IOException {
+	public Sprite[] loadSprites(File pckFile, File tabFile) throws IOException {
 		try ( var tab = LittleEndianInputStream.wrap(tabFile);
 		      RandomAccessFile pck = new RandomAccessFile(pckFile, "r");
 				) {
-			decode(tab, new RafDataSupplier(pck), out);
+			return decode(tab, new RafDataSupplier(pck), (int)(tabFile.length() / 4));
 		}
 	}
 	
-	public void loadShadows(File pckFile, File tabFile, List<Sprite> out) throws IOException {
+	public Sprite[] loadShadows(File pckFile, File tabFile) throws IOException {
 		try ( var tab = LittleEndianInputStream.wrap(tabFile);
 		      RandomAccessFile pck = new RandomAccessFile(pckFile, "r");
 				) {
-			decodeShadow(tab, new RafDataSupplier(pck), out);
+			return decodeShadow(tab, new RafDataSupplier(pck), (int)(tabFile.length() / 4));
 		}
 	}
 }

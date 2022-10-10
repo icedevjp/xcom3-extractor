@@ -3,17 +3,77 @@ package icedev.io;
 import java.io.*;
 import java.util.*;
 
-/** very minimalistic bare bones ISO9660 extractor https://wiki.osdev.org/ISO_9660 */
+/** very minimalistic bare bones ISO9660 extractor https://wiki.osdev.org/ISO_9660
+ * Also supports RAW CD format with 16 byte headers */
 public class ISO9660 {
 	RandomAccessFile raf;
-	LittleEndianInputStream in;
 	
-	public ISO9660(RandomAccessFile raf) throws IOException {
+	private boolean binModeRaw = false;
+	
+	public ISO9660(RandomAccessFile raf, int rawModeSectorSize) throws IOException {
 		this.raf = raf;
-		this.in = LittleEndianInputStream.wrap(raf);
+		
+		if(rawModeSectorSize > 0) {
+			this.binModeRaw = true;
+			this.sectorSize = rawModeSectorSize;
+		}
 	}
 	
-	public int blockSize;
+	public SectorInputStream getStreamAtSector(int sector) {
+		return new SectorInputStream(sector);
+	}
+	
+	public class SectorInputStream extends InputStream {
+		
+		byte[] buffer = new byte[blockSize];
+		int position = buffer.length;
+		int sector;
+		
+		SectorInputStream(int sector) {
+			this.sector = sector;
+		}
+		
+		private void ensure() throws IOException {
+			if(position < buffer.length) {
+				return;
+			}
+			
+			position = 0;
+			seekBlock2(sector++);
+			raf.readFully(buffer);
+		}
+		
+		@Override
+		public int read() throws IOException {
+			ensure();
+			return buffer[position++] & 0xFF;
+		}
+		
+		public int read(byte[] b, int off, int len) throws IOException {
+			if(len < 0)
+				throw new IndexOutOfBoundsException("length is " + len);
+			if(off < 0)
+				throw new IndexOutOfBoundsException("offset is " + len);
+			ensure();
+			int read = Math.min(len, buffer.length-position);
+			System.arraycopy(buffer, position, b, off, read);
+			position += read;
+			return read;
+		};
+		
+		public int available() throws IOException {
+			return buffer.length-position;
+		};
+		
+		public void setSector(int sector) throws IOException {
+			this.sector = sector;
+			position = buffer.length;
+		}
+		
+	}
+
+	public int sectorSize = 2048;
+	public int blockSize = 2048;
 	public int pathTableSize;
 	public int pathTableLocation;
 	
@@ -21,9 +81,11 @@ public class ISO9660 {
 	private String volumeIdentifier;
 	
 	public void readVolumeDescriptor() throws IOException {
-		raf.seek(1024 * 32);
+		var in = new LittleEndianInputStream(getStreamAtSector(16));
+		
 		
 		int volumeDescriptorType = in.readUint8();
+		
 		String identifier = in.readASCIIString(5);
 		int volumeDescriptorVersion = in.readUint8();
 		in.readUint8();
@@ -48,7 +110,6 @@ public class ISO9660 {
 		int volumeSequenceNumberBE = in .readUint16BE();
 		blockSize = in .readUint16();
 		int logicalBlockSizeBE = in .readUint16BE();
-	
 		
 		pathTableSize = in.readInt32();
 		int pathTableSizeBE = in.readInt32BE();
@@ -65,16 +126,26 @@ public class ISO9660 {
 		
 	}
 	
+	private void seekBlock2(int block) throws IOException {
+		if(binModeRaw) {
+			raf.seek(sectorSize * block + 16);
+		} else {
+			raf.seek(blockSize * block);
+		}
+	}
+	
 	public List<PathEntry> readPathTable() throws IOException {
-		LittleEndianInputStream in = LittleEndianInputStream.wrap(raf);
-		List<PathEntry> table = new ArrayList<>();
+		SectorInputStream secin = getStreamAtSector(pathTableLocation);
 		
-		raf.seek(blockSize * pathTableLocation);
-
+		byte[] pathTableBytes = secin.readNBytes(pathTableSize);
+		
+		LittleEndianInputStream in = new LittleEndianInputStream(new ByteArrayInputStream(pathTableBytes));
+		
+		List<PathEntry> table = new ArrayList<>();
 		long pointer = raf.getFilePointer();
 		long maxLocation = pathTableSize + pointer;
 
-		while(true) {
+		while(in.available() > 0) {
 			PathEntry p = new PathEntry();
 			int idlen = in.readUint8();
 			p.extendedAttributeRecordLength = in.readUint8();
@@ -91,34 +162,34 @@ public class ISO9660 {
 			
 			p.path = p.identifier;
 			
-			if(p.parentNumber < index) {
+			if(p.parentNumber < index && p.parentNumber > 1) {
 				p.path = table.get(p.parentNumber-1).path + "/" + p.identifier;
 			}
 			
-			pointer = raf.getFilePointer();
-			if(pointer >= maxLocation)
-				break;
+			//pointer = raf.getFilePointer();
+			//if(pointer >= maxLocation)
+			//	break;
 		}
 		
 		return table;
 	}
 	
 	public void readDirEntries(PathEntry path, List<DirEntry> out) throws IOException {
-		raf.seek(path.locationOfExtent * blockSize);
-		
+		SectorInputStream secin = getStreamAtSector(path.locationOfExtent);
+		LittleEndianInputStream in = new LittleEndianInputStream(secin); 
 
 		int blockCurrent = 0;
 		int blockMax = 0;
 
-		DirEntry first = readDirectoryEntry();
+		DirEntry first = readDirectoryEntry(in);
 		blockMax = first.dataLength / blockSize - 1;
 		
 		while(true) {
-			DirEntry entry = readDirectoryEntry();
+			DirEntry entry = readDirectoryEntry(in);
 			if(entry == null) {
 				if(blockCurrent < blockMax) {
 					blockCurrent++;
-					raf.seek((path.locationOfExtent+blockCurrent) * blockSize);
+					secin.setSector(path.locationOfExtent+blockCurrent);
 					continue;
 				}
 				break;
@@ -128,7 +199,7 @@ public class ISO9660 {
 	}
 	
 	
-	private DirEntry readDirectoryEntry() throws IOException {
+	private DirEntry readDirectoryEntry(LittleEndianInputStream in) throws IOException {
 		int recordLength = in.readUint8();
 		
 		if(recordLength == 0) {

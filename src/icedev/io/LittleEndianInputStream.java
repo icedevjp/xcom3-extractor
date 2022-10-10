@@ -3,7 +3,6 @@ package icedev.io;
 import java.io.*;
 
 public class LittleEndianInputStream extends FilterInputStream {
-
 	public LittleEndianInputStream(InputStream in) {
 		super(in);
 	}
@@ -84,15 +83,7 @@ public class LittleEndianInputStream extends FilterInputStream {
 		return strlen;
 	}
 	
-	public static LittleEndianInputStream wrap(RandomAccessFile raf) throws IOException {
-		return new LittleEndianInputStream(new FileInputStream(raf.getFD()));
-	}
-	
-	public static LittleEndianInputStream wrap(InputStream in) {
-		return new LittleEndianInputStream(new BufferedInputStream(in));
-	}
-	
 	public static LittleEndianInputStream wrap(File file) throws IOException {
-		return new LittleEndianInputStream(new BufferedInputStream(new FileInputStream(file)));
+		return new LittleEndianInputStream(new BufferedInputStream(new FileInputStream(file), 2048));
 	}
 }
